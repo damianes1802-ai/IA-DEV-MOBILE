@@ -18,6 +18,8 @@ LOG="$ADEV_DATA/setup.log"
 APT_OPTS=(-y -o Dpkg::Options::=--force-confnew)
 
 say "actualizando paquetes (registro completo en $LOG)"
+# Repara instalaciones interrumpidas (p. ej. si se cortó un intento anterior).
+dpkg --configure -a >>"$LOG" 2>&1
 if ! { apt-get update && apt-get "${APT_OPTS[@]}" upgrade; } >>"$LOG" 2>&1; then
   warn "la actualización falló. Últimas líneas del registro:"
   tail -n 5 "$LOG" | sed 's/^/     /'
@@ -32,7 +34,12 @@ for p in "${PKGS[@]}"; do
   printf '   · %-14s' "$p"
   if dpkg -s "$p" >/dev/null 2>&1; then echo "ya instalado"; continue; fi
   [[ "$p" == openjdk-17 ]] && printf '(descargando, paciencia) '
-  if apt-get "${APT_OPTS[@]}" install "$p" >>"$LOG" 2>&1; then echo "ok"; else echo "no disponible"; missing+=("$p"); fi
+  if apt-get "${APT_OPTS[@]}" install "$p" >>"$LOG" 2>&1; then
+    echo "ok"
+  else
+    echo "falló"; missing+=("$p")
+    grep -E '^(E:|W:|dpkg:)' "$LOG" | tail -n 2 | sed 's/^/        /'
+  fi
 done
 (( ${#missing[@]} )) && warn "no se instalaron: ${missing[*]} (detalles en $LOG)"
 
