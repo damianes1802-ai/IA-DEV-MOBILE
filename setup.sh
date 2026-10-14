@@ -27,8 +27,9 @@ if ! { pkg update && { yes || true; } | pkg upgrade -y; } >>"$LOG" 2>&1; then
 fi
 
 # Uno a uno: si alguno no existe en tu mirror, el resto se instala igual.
+# (zipalign no es un paquete aparte: lo trae aapt.)
 # openjdk-21 pesa ~200 MB: puede tardar varios minutos sin mostrar nada.
-PKGS=(git openjdk-21 aapt aapt2 apksigner d8 zipalign zip unzip wget android-tools termux-tools micro)
+PKGS=(git openjdk-21 aapt aapt2 apksigner d8 zip unzip wget android-tools termux-tools micro)
 missing=()
 for p in "${PKGS[@]}"; do
   printf '   · %-14s' "$p"
