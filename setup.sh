@@ -12,17 +12,29 @@ warn() { printf '\e[33m!!\e[0m %s\n' "$*"; }
 
 [[ -n "${PREFIX:-}" && -d "$PREFIX" ]] || { echo "Este script es para Termux (Android)."; exit 1; }
 
-say "actualizando paquetes"
-yes | pkg update >/dev/null 2>&1 || warn "pkg update falló; sigo igualmente"
+mkdir -p "$ADEV_DATA"
+LOG="$ADEV_DATA/setup.log"
+: >"$LOG"
+APT_OPTS=(-y -o Dpkg::Options::=--force-confnew)
+
+say "actualizando paquetes (registro completo en $LOG)"
+if ! { apt-get update && apt-get "${APT_OPTS[@]}" upgrade; } >>"$LOG" 2>&1; then
+  warn "la actualización falló. Últimas líneas del registro:"
+  tail -n 5 "$LOG" | sed 's/^/     /'
+  warn "si es un problema de mirror, ejecuta 'termux-change-repo', elige otro y relanza setup.sh"
+fi
 
 # Uno a uno: si alguno no existe en tu mirror, el resto se instala igual.
+# openjdk-17 pesa ~200 MB: puede tardar varios minutos sin mostrar nada.
 PKGS=(git openjdk-17 aapt aapt2 apksigner d8 zipalign zip unzip wget android-tools termux-tools micro)
+missing=()
 for p in "${PKGS[@]}"; do
   printf '   · %-14s' "$p"
-  if pkg install -y "$p" >/dev/null 2>&1; then echo "ok"; else echo "no disponible"; fi
+  if dpkg -s "$p" >/dev/null 2>&1; then echo "ya instalado"; continue; fi
+  [[ "$p" == openjdk-17 ]] && printf '(descargando, paciencia) '
+  if apt-get "${APT_OPTS[@]}" install "$p" >>"$LOG" 2>&1; then echo "ok"; else echo "no disponible"; missing+=("$p"); fi
 done
-
-mkdir -p "$ADEV_DATA"
+(( ${#missing[@]} )) && warn "no se instalaron: ${missing[*]} (detalles en $LOG)"
 
 # android.jar: lo trae el paquete aapt; si no, se descarga la plataforma oficial.
 have_jar=0
