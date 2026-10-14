@@ -15,12 +15,12 @@ warn() { printf '\e[33m!!\e[0m %s\n' "$*"; }
 mkdir -p "$ADEV_DATA"
 LOG="$ADEV_DATA/setup.log"
 : >"$LOG"
-APT_OPTS=(-y -o Dpkg::Options::=--force-confnew)
 
 say "actualizando paquetes (registro completo en $LOG)"
 # Repara instalaciones interrumpidas (p. ej. si se cortó un intento anterior).
 dpkg --configure -a >>"$LOG" 2>&1
-if ! { apt-get update && apt-get "${APT_OPTS[@]}" upgrade; } >>"$LOG" 2>&1; then
+# Usamos pkg (no apt-get directo): pkg elige el mirror y refresca las listas.
+if ! { pkg update && yes | pkg upgrade -y; } >>"$LOG" 2>&1; then
   warn "la actualización falló. Últimas líneas del registro:"
   tail -n 5 "$LOG" | sed 's/^/     /'
   warn "si es un problema de mirror, ejecuta 'termux-change-repo', elige otro y relanza setup.sh"
@@ -34,7 +34,7 @@ for p in "${PKGS[@]}"; do
   printf '   · %-14s' "$p"
   if dpkg -s "$p" >/dev/null 2>&1; then echo "ya instalado"; continue; fi
   [[ "$p" == openjdk-17 ]] && printf '(descargando, paciencia) '
-  if apt-get "${APT_OPTS[@]}" install "$p" >>"$LOG" 2>&1; then
+  if pkg install -y "$p" >>"$LOG" 2>&1; then
     echo "ok"
   else
     echo "falló"; missing+=("$p")
