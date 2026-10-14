@@ -162,7 +162,7 @@ cmd_install() {
     adb install -r "$APK"
   elif have termux-open; then
     info "adb no está conectado: abriendo el instalador de Android"
-    termux-open --view --content-type application/vnd.android.package-archive "$APK"
+    termux-open --chooser --content-type application/vnd.android.package-archive "$APK"
   else
     die "no hay adb conectado ni termux-open. Mira 'adev pair' en el README."
   fi
