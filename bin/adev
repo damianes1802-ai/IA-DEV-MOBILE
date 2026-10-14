@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# adev — compila e instala apps Android desde la terminal (Termux), sin Gradle.
+#
+# Cadena: aapt2 (recursos) -> javac (Java) -> d8 (dex) -> zip -> zipalign -> apksigner
+set -euo pipefail
+
+ADEV_HOME="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+ADEV_DATA="${ADEV_DATA:-$HOME/.adev}"
+KEYSTORE="${ADEV_KEYSTORE:-$ADEV_DATA/debug.keystore}"
+KS_PASS="android"
+
+AAPT2="${AAPT2:-aapt2}"
+D8="${D8:-d8}"
+APKSIGNER="${APKSIGNER:-apksigner}"
+ZIPALIGN="${ZIPALIGN:-zipalign}"
+JAVAC="${JAVAC:-javac}"
+
+c_ok=$'\e[32m'; c_err=$'\e[31m'; c_dim=$'\e[2m'; c_off=$'\e[0m'
+info() { printf '%s==>%s %s\n' "$c_ok" "$c_off" "$*"; }
+step() { printf '%s  · %s%s\n' "$c_dim" "$*" "$c_off"; }
+die()  { printf '%serror:%s %s\n' "$c_err" "$c_off" "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<'EOF'
+Uso: adev <comando> [args]
+
+Proyectos
+  new <Nombre> [paquete]   Crea un proyecto nuevo (p. ej. adev new Hola com.yo.hola)
+  build                    Compila el proyecto actual -> build/<Nombre>.apk
+  clean                    Borra build/
+
+Dispositivo (vía depuración inalámbrica + adb, sin pantallas)
+  pair <puerto> <código>   Empareja adb con este teléfono (solo la primera vez)
+  connect <puerto>         Conecta adb a localhost:<puerto>
+  install                  Instala el APK (adb si está conectado; si no, abre el instalador)
+  run                      build + install + abre la app
+  log                      Muestra el logcat de la app
+  stop                     Cierra la app
+
+Diagnóstico
+  doctor                   Comprueba que todas las herramientas están instaladas
+EOF
+}
+
+# ---------------------------------------------------------------- helpers
+
+find_android_jar() {
+  if [[ -n "${ANDROID_JAR:-}" ]]; then echo "$ANDROID_JAR"; return; fi
+  local c
+  for c in "$ADEV_DATA/android.jar" \
+           "${PREFIX:-/usr}/share/aapt/android.jar" \
+           "${PREFIX:-/usr}/share/java/android.jar"; do
+    [[ -f "$c" ]] && { echo "$c"; return; }
+  done
+  for c in "${ANDROID_HOME:-$HOME/android-sdk}"/platforms/*/android.jar; do
+    [[ -f "$c" ]] && { echo "$c"; return; }
+  done
+  return 1
+}
+
+project_root() {
+  local d="$PWD"
+  while [[ "$d" != "/" ]]; do
+    [[ -f "$d/adev.conf" ]] && { echo "$d"; return; }
+    d="$(dirname "$d")"
+  done
+  die "no estás dentro de un proyecto (falta adev.conf). Crea uno con: adev new <Nombre>"
+}
+
+load_conf() {
+  ROOT="$(project_root)"
+  # shellcheck disable=SC1091
+  source "$ROOT/adev.conf"
+  : "${APP_NAME:?falta APP_NAME en adev.conf}" "${PACKAGE:?falta PACKAGE en adev.conf}"
+  MIN_SDK="${MIN_SDK:-24}"; TARGET_SDK="${TARGET_SDK:-33}"
+  VERSION_CODE="${VERSION_CODE:-1}"; VERSION_NAME="${VERSION_NAME:-1.0}"
+  BUILD="$ROOT/build"
+  APK="$BUILD/$APP_NAME.apk"
+}
+
+ensure_keystore() {
+  [[ -f "$KEYSTORE" ]] && return
+  step "creando keystore de depuración en $KEYSTORE"
+  mkdir -p "$(dirname "$KEYSTORE")"
+  keytool -genkeypair -keystore "$KEYSTORE" -storepass "$KS_PASS" -keypass "$KS_PASS" \
+    -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+    -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
+}
+
+adb_ready() { have adb && adb get-state >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- comandos
+
+cmd_new() {
+  local name="${1:-}" pkg="${2:-}"
+  [[ -n "$name" ]] || die "uso: adev new <Nombre> [paquete]"
+  [[ "$name" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]] || die "el nombre solo puede tener letras, números y _"
+  [[ -n "$pkg" ]] || pkg="com.example.$(tr '[:upper:]' '[:lower:]' <<<"$name")"
+  [[ "$pkg" =~ ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$ ]] || die "paquete inválido: $pkg"
+  [[ -e "$name" ]] && die "ya existe ./$name"
+
+  local pkg_path="${pkg//.//}"
+  cp -r "$ADEV_HOME/template" "$name"
+  mkdir -p "$name/src/$pkg_path"
+  mv "$name/src/MainActivity.java" "$name/src/$pkg_path/MainActivity.java"
+  find "$name" -type f -exec sed -i -e "s/__APP_NAME__/$name/g" -e "s/__PACKAGE__/$pkg/g" {} +
+  info "proyecto creado en ./$name ($pkg)"
+  echo "    cd $name && adev build"
+}
+
+cmd_build() {
+  load_conf
+  local jar; jar="$(find_android_jar)" || die "no encuentro android.jar (ejecuta setup.sh o define ANDROID_JAR)"
+  info "compilando $APP_NAME ($PACKAGE)"
+  rm -rf "$BUILD"; mkdir -p "$BUILD"/{gen,classes,dex}
+
+  step "aapt2: recursos"
+  "$AAPT2" compile --dir "$ROOT/res" -o "$BUILD/res.zip"
+  "$AAPT2" link -I "$jar" \
+    --manifest "$ROOT/AndroidManifest.xml" \
+    --min-sdk-version "$MIN_SDK" --target-sdk-version "$TARGET_SDK" \
+    --version-code "$VERSION_CODE" --version-name "$VERSION_NAME" \
+    --java "$BUILD/gen" -o "$BUILD/base.apk" "$BUILD/res.zip"
+
+  step "javac: código Java"
+  local -a srcs libs=()
+  mapfile -t srcs < <(find "$ROOT/src" "$BUILD/gen" -name '*.java')
+  [[ -d "$ROOT/libs" ]] && mapfile -t libs < <(find "$ROOT/libs" -name '*.jar')
+  local cp="$jar"; for l in "${libs[@]}"; do cp="$cp:$l"; done
+  "$JAVAC" -nowarn -Xlint:-options -source 8 -target 8 -encoding UTF-8 \
+    -bootclasspath "$jar" -classpath "$cp" -d "$BUILD/classes" "${srcs[@]}"
+
+  step "d8: dex"
+  local -a classes
+  mapfile -t classes < <(find "$BUILD/classes" -name '*.class')
+  "$D8" --lib "$jar" --min-api "$MIN_SDK" --output "$BUILD/dex" "${classes[@]}" "${libs[@]}"
+
+  step "empaquetando"
+  cp "$BUILD/base.apk" "$BUILD/unsigned.apk"
+  (cd "$BUILD/dex" && zip -q -u "$BUILD/unsigned.apk" ./*.dex)
+  [[ -d "$ROOT/assets" ]] && (cd "$ROOT" && zip -q -r -u "$BUILD/unsigned.apk" assets)
+  if have "$ZIPALIGN"; then
+    "$ZIPALIGN" -f -p 4 "$BUILD/unsigned.apk" "$BUILD/aligned.apk"
+  else
+    cp "$BUILD/unsigned.apk" "$BUILD/aligned.apk"
+  fi
+
+  step "apksigner: firma de depuración"
+  ensure_keystore
+  "$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass "pass:$KS_PASS" --key-pass "pass:$KS_PASS" \
+    --out "$APK" "$BUILD/aligned.apk"
+  rm -f "$APK.idsig"
+  info "listo: ${APK#"$PWD"/} ($(du -h "$APK" | cut -f1))"
+}
+
+cmd_install() {
+  load_conf
+  [[ -f "$APK" ]] || cmd_build
+  if adb_ready; then
+    info "instalando con adb"
+    adb install -r "$APK"
+  elif have termux-open; then
+    info "adb no está conectado: abriendo el instalador de Android"
+    termux-open --view "$APK"
+  else
+    die "no hay adb conectado ni termux-open. Mira 'adev pair' en el README."
+  fi
+}
+
+cmd_run() {
+  cmd_build
+  cmd_install
+  if adb_ready; then
+    info "abriendo $PACKAGE"
+    adb shell am start -n "$PACKAGE/.MainActivity" >/dev/null
+  fi
+}
+
+cmd_log() {
+  load_conf
+  adb_ready || die "adb no está conectado (adev connect <puerto>)"
+  local pid; pid="$(adb shell pidof -s "$PACKAGE" | tr -d '\r' || true)"
+  [[ -n "$pid" ]] || die "$PACKAGE no se está ejecutando (adev run)"
+  adb logcat --pid="$pid"
+}
+
+cmd_stop() { load_conf; adb_ready && adb shell am force-stop "$PACKAGE"; }
+
+cmd_pair() {
+  [[ $# -eq 2 ]] || die "uso: adev pair <puerto> <código>  (Ajustes > Opciones de desarrollador > Depuración inalámbrica > Vincular con código)"
+  adb pair "localhost:$1" "$2"
+}
+
+cmd_connect() {
+  [[ $# -eq 1 ]] || die "uso: adev connect <puerto>  (el puerto que muestra 'Depuración inalámbrica', no el de vinculación)"
+  adb connect "localhost:$1"
+}
+
+cmd_doctor() {
+  local ok=1 t
+  for t in "$JAVAC" keytool "$AAPT2" "$D8" "$APKSIGNER" zip; do
+    if have "$t"; then step "✔ $t"; else printf '  %s✘ %s%s\n' "$c_err" "$t" "$c_off"; ok=0; fi
+  done
+  for t in "$ZIPALIGN" adb termux-open; do
+    if have "$t"; then step "✔ $t"; else step "– $t (opcional)"; fi
+  done
+  if jar="$(find_android_jar)"; then step "✔ android.jar: $jar"; else printf '  %s✘ android.jar%s\n' "$c_err" "$c_off"; ok=0; fi
+  if adb_ready; then step "✔ adb conectado"; else step "– adb sin conectar"; fi
+  (( ok )) && info "todo listo" || die "faltan herramientas: ejecuta setup.sh"
+}
+
+case "${1:-}" in
+  new|build|clean|install|run|log|stop|pair|connect|doctor) c="$1"; shift ;;
+  -h|--help|help|"") usage; exit 0 ;;
+  *) usage; exit 1 ;;
+esac
+[[ "$c" == clean ]] && { load_conf; rm -rf "$BUILD"; info "build/ borrado"; exit 0; }
+"cmd_$c" "$@"
