@@ -20,7 +20,7 @@ say "actualizando paquetes (registro completo en $LOG)"
 # Repara instalaciones interrumpidas (p. ej. si se cortó un intento anterior).
 dpkg --configure -a >>"$LOG" 2>&1
 # Usamos pkg (no apt-get directo): pkg elige el mirror y refresca las listas.
-if ! { pkg update && yes | pkg upgrade -y; } >>"$LOG" 2>&1; then
+if ! { pkg update && { yes || true; } | pkg upgrade -y; } >>"$LOG" 2>&1; then
   warn "la actualización falló. Últimas líneas del registro:"
   tail -n 5 "$LOG" | sed 's/^/     /'
   warn "si es un problema de mirror, ejecuta 'termux-change-repo', elige otro y relanza setup.sh"
