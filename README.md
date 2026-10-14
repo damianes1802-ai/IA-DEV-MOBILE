@@ -48,8 +48,9 @@ MiApp/
 
 ## 3. Sin pantallas: instalar, abrir y ver logs con adb
 
-Sin adb, `adev install` abre el instalador de Android y tienes que pulsar
-«Instalar». Con la **depuración inalámbrica** (Android 11+) todo se hace
+Sin adb, `adev install` muestra un selector de apps: elige **«Instalador de
+paquetes»** (no Termux) y pulsa «Instalar». La primera vez Android pedirá
+permitir que Termux instale apps. Con la **depuración inalámbrica** (Android 11+) todo se hace
 desde la terminal:
 
 1. Ajustes → Acerca del teléfono → pulsa 7 veces «Número de compilación».
@@ -88,6 +89,19 @@ adev stop    # cierra la app
 | `adev pair` / `adev connect` | Configura adb inalámbrico contra el propio teléfono |
 | `adev clean` | Borra `build/` |
 | `adev doctor` | Comprueba las herramientas |
+
+## Problemas conocidos
+
+- **«Unable to locate package» o descargas muy lentas**: cambia de mirror con
+  `termux-change-repo` → «Single mirror» → uno cercano (p. ej. `grimler.se`
+  en Europa) y relanza `bash setup.sh`.
+- **«TermuxContentProvider requires allow-external-apps»** al instalar:
+  `setup.sh` ya lo activa; a mano es
+  `echo "allow-external-apps = true" >> ~/.termux/termux.properties && termux-reload-settings`.
+- **El APK se guarda en `~/downloads` en lugar de instalarse**: en el selector
+  elegiste Termux; vuelve a ejecutar `adev install` y elige el instalador.
+  Alternativa: `termux-setup-storage && cp build/*.apk ~/storage/downloads/`
+  y ábrelo desde la app Archivos.
 
 ## Notas
 
