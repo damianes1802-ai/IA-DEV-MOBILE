@@ -27,13 +27,13 @@ if ! { pkg update && { yes || true; } | pkg upgrade -y; } >>"$LOG" 2>&1; then
 fi
 
 # Uno a uno: si alguno no existe en tu mirror, el resto se instala igual.
-# openjdk-17 pesa ~200 MB: puede tardar varios minutos sin mostrar nada.
-PKGS=(git openjdk-17 aapt aapt2 apksigner d8 zipalign zip unzip wget android-tools termux-tools micro)
+# openjdk-21 pesa ~200 MB: puede tardar varios minutos sin mostrar nada.
+PKGS=(git openjdk-21 aapt aapt2 apksigner d8 zipalign zip unzip wget android-tools termux-tools micro)
 missing=()
 for p in "${PKGS[@]}"; do
   printf '   · %-14s' "$p"
   if dpkg -s "$p" >/dev/null 2>&1; then echo "ya instalado"; continue; fi
-  [[ "$p" == openjdk-17 ]] && printf '(descargando, paciencia) '
+  [[ "$p" == openjdk-21 ]] && printf '(descargando, paciencia) '
   if pkg install -y "$p" >>"$LOG" 2>&1; then
     echo "ok"
   else
