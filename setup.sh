@@ -60,6 +60,16 @@ if (( ! have_jar )); then
   rm -rf "$tmp"
 fi
 
+# Necesario para que `adev install` pueda pasar el APK al instalador de Android.
+PROPS="$HOME/.termux/termux.properties"
+mkdir -p "$(dirname "$PROPS")"
+if ! grep -qE '^\s*allow-external-apps\s*=\s*true' "$PROPS" 2>/dev/null; then
+  say "activando allow-external-apps en $PROPS"
+  sed -i '/allow-external-apps/d' "$PROPS" 2>/dev/null
+  echo "allow-external-apps = true" >>"$PROPS"
+  termux-reload-settings 2>/dev/null || true
+fi
+
 say "instalando el comando adev"
 ln -sf "$REPO/bin/adev" "$PREFIX/bin/adev"
 chmod +x "$REPO/bin/adev"
